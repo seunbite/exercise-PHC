@@ -63,7 +63,7 @@ from learning import amp_network_builder
 from learning import amp_network_mcp_builder
 from learning import amp_network_pnn_builder
 
-from env.tasks import humanoid_amp_task
+from phc.env.tasks import humanoid_amp_task
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from easydict import EasyDict
@@ -305,7 +305,7 @@ def main(cfg_hydra: DictConfig) -> None:
         )
         wandb.config.update(cfg, allow_val_change=True)
         wandb.run.name = cfg.exp_name
-        wandb.run.save()
+        wandb.run.save(cfg.output_path)
     
     set_seed(cfg.get("seed", -1), cfg.get("torch_deterministic", False))
 

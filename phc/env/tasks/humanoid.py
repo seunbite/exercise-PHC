@@ -1718,26 +1718,51 @@ class Humanoid(BaseTask):
 
         cam_pos = gymapi.Vec3(self._cam_prev_char_pos[0], self._cam_prev_char_pos[1] - 3.0, 1.0)
         cam_target = gymapi.Vec3(self._cam_prev_char_pos[0], self._cam_prev_char_pos[1], 1.0)
-        if self.viewer:
+        
+        # Only call Isaac Gym viewer methods if viewer is actually an Isaac Gym viewer
+        if self.viewer is not None and hasattr(self.viewer, 'handle') and not hasattr(self.viewer, 'cam'):
+            # This is an Isaac Gym viewer
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
+        elif self.viewer is not None and hasattr(self.viewer, 'cam'):
+            # This is a MujocoViewer, set camera position using MuJoCo methods
+            self.viewer.cam.lookat[0] = cam_target.x
+            self.viewer.cam.lookat[1] = cam_target.y
+            self.viewer.cam.lookat[2] = cam_target.z
+            
+            # Calculate distance and angles for MuJoCo camera
+            cam_dir = [cam_pos.x - cam_target.x, cam_pos.y - cam_target.y, cam_pos.z - cam_target.z]
+            import math
+            self.viewer.cam.distance = math.sqrt(cam_dir[0]**2 + cam_dir[1]**2 + cam_dir[2]**2)
+            self.viewer.cam.azimuth = math.degrees(math.atan2(cam_dir[1], cam_dir[0]))
+            self.viewer.cam.elevation = math.degrees(math.atan2(cam_dir[2], math.sqrt(cam_dir[0]**2 + cam_dir[1]**2)))
+        
         return
 
     def _update_camera(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
         char_root_pos = self._humanoid_root_states[0, 0:3].cpu().numpy()
 
-        cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
+        # Only call Isaac Gym viewer methods if viewer is actually an Isaac Gym viewer
+        if self.viewer is not None and hasattr(self.viewer, 'handle') and not hasattr(self.viewer, 'cam'):
+            # This is an Isaac Gym viewer
+            cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
+            cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
+            cam_delta = cam_pos - self._cam_prev_char_pos
 
-        cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
-        cam_delta = cam_pos - self._cam_prev_char_pos
+            new_cam_target = gymapi.Vec3(char_root_pos[0], char_root_pos[1], 1.0)
+            new_cam_pos = gymapi.Vec3(char_root_pos[0] + cam_delta[0], char_root_pos[1] + cam_delta[1], cam_pos[2])
 
-        new_cam_target = gymapi.Vec3(char_root_pos[0], char_root_pos[1], 1.0)
-        new_cam_pos = gymapi.Vec3(char_root_pos[0] + cam_delta[0], char_root_pos[1] + cam_delta[1], cam_pos[2])
-
-        self.gym.set_camera_location(self.recorder_camera_handle, self.envs[0], new_cam_pos, new_cam_target)
-
-        if self.viewer:
+            self.gym.set_camera_location(self.recorder_camera_handle, self.envs[0], new_cam_pos, new_cam_target)
             self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+        elif self.viewer is not None and hasattr(self.viewer, 'cam'):
+            # This is a MujocoViewer, update camera using MuJoCo methods
+            # For MujocoViewer, we'll follow the character by updating the lookat position
+            self.viewer.cam.lookat[0] = char_root_pos[0]
+            self.viewer.cam.lookat[1] = char_root_pos[1]
+            self.viewer.cam.lookat[2] = 1.0
+            
+            # Keep the same camera distance and angles for smooth following
+            # Camera position will be calculated automatically based on lookat, distance, azimuth, elevation
 
         self._cam_prev_char_pos[:] = char_root_pos
         return

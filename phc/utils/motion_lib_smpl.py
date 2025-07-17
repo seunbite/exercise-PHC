@@ -128,7 +128,14 @@ class MotionLibSMPL(MotionLibBase):
                 start = random.randint(0, seq_len - max_len)
                 end = start + max_len
 
-            trans = curr_file['root_trans_offset'].clone()[start:end]
+            if isinstance(curr_file['root_trans_offset'], np.ndarray):
+                trans = to_torch(curr_file['root_trans_offset'].copy()[start:end])
+            else:
+                trans = curr_file['root_trans_offset'].clone()[start:end]
+            
+            if isinstance(curr_file['pose_aa'], np.ndarray):
+                pose_aa = to_torch(curr_file['pose_aa'][start:end])
+            # trans = curr_file['root_trans_offset'].clone()[start:end]
             pose_aa = to_torch(curr_file['pose_aa'][start:end])
             pose_quat_global = curr_file['pose_quat_global'][start:end]
             
@@ -143,7 +150,7 @@ class MotionLibSMPL(MotionLibBase):
                 random_heading_rot = sRot.from_euler("xyz", random_rot)
                 pose_aa[:, :3] = torch.tensor((random_heading_rot * sRot.from_rotvec(pose_aa[:, :3])).as_rotvec())
                 pose_quat_global = (random_heading_rot * sRot.from_quat(pose_quat_global.reshape(-1, 4))).as_quat().reshape(B, J, N)
-                trans = torch.matmul(trans, torch.from_numpy(random_heading_rot.as_matrix().T))
+                trans = torch.matmul(trans, torch.from_numpy(random_heading_rot.as_matrix().T).to(trans.dtype))
             ##### ZL: randomize the heading ######
 
             if not mesh_parsers is None:

@@ -26,27 +26,46 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import enum
-import glob
-import os
-import sys
-import pdb
-import os.path as osp
-
-sys.path.append(os.getcwd())
-
-import operator
-from copy import deepcopy
-import random
-
-from isaacgym import gymapi
-from isaacgym.gymutil import get_property_setter_map, get_property_getter_map, get_default_setter_args, apply_random_samples, check_buckets, generate_random_samples
-from isaacgym import gymtorch
-
+import math
 import numpy as np
+import os
+import os.path as osp
+import random
+import time
 import torch
-
 import imageio
+import matplotlib.pyplot as plt
+import joblib
+import os
+import os.path as osp
+import functools
+import gc
+import sys
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import shutil
+import glob
+import cv2
+import xml.etree.ElementTree as ET
+import random
+import numpy as np
+from collections import deque
+from PIL import Image
+from isaacgym import gymtorch
+from isaacgym import gymapi
+from isaacgym.torch_utils import *
+from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from phc.utils.draw_utils import agt_color
+from phc.utils.torch_utils import to_torch
+from phc.utils.running_mean_std import RunningMeanStd
+from phc.utils.flags import flags
+from phc.utils.pytorch3d_transforms import *
+from phc.utils.motion_lib_base import FixHeightMode
+from phc.utils.torch_humanoid_batch import Humanoid_Batch
+from phc.utils.torch_utils import *
+from phc.learning.replay_buffer import ReplayBuffer
+from phc.utils.torch_utils import to_torch
 from datetime import datetime
 from phc.utils.flags import flags
 from collections import defaultdict
@@ -55,6 +74,10 @@ import json
 from collections import deque
 import threading
 from tqdm import tqdm
+
+# MuJoCo imports
+import mujoco
+import mujoco_viewer
 
 # Base class for RL tasks
 class BaseTask():
@@ -80,8 +103,6 @@ class BaseTask():
         self.graphics_device_id = self.device_id
         if enable_camera_sensors == False and self.headless == True:
             self.graphics_device_id = -1
-        # if flags.server_mode:
-        # self.graphics_device_id = self.device_id
 
         self.num_envs = cfg["env"]["num_envs"]
         self.num_obs = cfg["env"]["numObservations"]
@@ -131,47 +152,44 @@ class BaseTask():
 
     def create_viewer(self):
         if self.headless == False:
-            # headless server mode will use the smart display
-
-            # subscribe to keyboard shortcuts
-            camera_props = gymapi.CameraProperties()
-            camera_props.width = 1920
-            camera_props.height = 1000
-            self.viewer = self.gym.create_viewer(self.sim, camera_props)
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_ESCAPE, "QUIT")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_V, "toggle_viewer_sync")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_L, "toggle_video_record")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_SEMICOLON, "cancel_video_record")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_R, "reset")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_F, "follow")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_G, "fixed")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_H, "divide_group")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_C, "print_cam")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_M, "disable_collision_reset")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_B, "fixed_path")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_N, "real_path")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_K, "show_traj")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_J, "apply_force")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_LEFT, "prev_env")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_RIGHT, "next_env")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_T, "resample_motion")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_Y, "slow_traj")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_I, "trigger_input")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_P, "show_progress")
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_O, "change_color")
-
-            self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_SPACE, "PAUSE")
-
-            # set the camera position based on up axis
-            sim_params = self.gym.get_sim_params(self.sim)
-            if sim_params.up_axis == gymapi.UP_AXIS_Z:
-                cam_pos = gymapi.Vec3(20.0, 25.0, 3.0)
-                cam_target = gymapi.Vec3(10.0, 15.0, 0.0)
-            else:
-                cam_pos = gymapi.Vec3(20.0, 3.0, 25.0)
-                cam_target = gymapi.Vec3(10.0, 0.0, 15.0)
-
-            self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
+            # Create MuJoCo model for visualization
+            self.mujoco_model = self._create_mujoco_model()
+            self.mujoco_data = mujoco.MjData(self.mujoco_model)
+            self.viewer = mujoco_viewer.MujocoViewer(self.mujoco_model, self.mujoco_data)
+            
+            # Set up keyboard callbacks for MuJoCo viewer
+            # self.viewer.add_key_callback("escape", self._handle_escape_key)
+            # self.viewer.add_key_callback("v", self._handle_v_key)
+            # self.viewer.add_key_callback("l", self._handle_l_key)
+            # self.viewer.add_key_callback("r", self._handle_r_key)
+            # self.viewer.add_key_callback("f", self._handle_f_key)
+            # self.viewer.add_key_callback("g", self._handle_g_key)
+            # self.viewer.add_key_callback("h", self._handle_h_key)
+            # self.viewer.add_key_callback("c", self._handle_c_key)
+            # self.viewer.add_key_callback("m", self._handle_m_key)
+            # self.viewer.add_key_callback("b", self._handle_b_key)
+            # self.viewer.add_key_callback("n", self._handle_n_key)
+            # self.viewer.add_key_callback("k", self._handle_k_key)
+            # self.viewer.add_key_callback("j", self._handle_j_key)
+            # self.viewer.add_key_callback("left", self._handle_left_key)
+            # self.viewer.add_key_callback("right", self._handle_right_key)
+            # self.viewer.add_key_callback("t", self._handle_t_key)
+            # self.viewer.add_key_callback("y", self._handle_y_key)
+            # self.viewer.add_key_callback("i", self._handle_i_key)
+            # self.viewer.add_key_callback("p", self._handle_p_key)
+            # self.viewer.add_key_callback("o", self._handle_o_key)
+            # self.viewer.add_key_callback("space", self._handle_space_key)
+            
+            # Set initial camera position
+            self.viewer.cam.distance = 10.0
+            self.viewer.cam.azimuth = 45.0
+            self.viewer.cam.elevation = -20.0
+            
+            print("MuJoCo viewer initialized successfully")
+        else:
+            self.viewer = None
+            self.mujoco_model = None
+            self.mujoco_data = None
 
         ###### Custom Camera Sensors ######
         self.recorder_camera_handles = []
@@ -194,6 +212,241 @@ class BaseTask():
         self._video_path = osp.join(rendering_out, f"{self.cfg_name}-%s.mp4")
         self._states_path = osp.join(states_out, f"{self.cfg_name}-%s.pkl")
         # self.gym.draw_env_rigid_contacts(self.viewer, self.envs[1], gymapi.Vec3(0.9, 0.3, 0.3), 1.0, True)
+        
+    def _create_mujoco_model(self):
+        """Create a simple MuJoCo model for visualization"""
+        model_xml = """
+        <mujoco model="humanoid_vis">
+            <compiler coordinate="local"/>
+            <statistic extent="2" center="0 0 1"/>
+            <option timestep="0.00555"/>
+            
+            <default>
+                <geom type="capsule" condim="1" friction="1.0 0.05 0.05" rgba="0.8 0.6 0.4 1"/>
+                <joint type="hinge" damping="0.1" stiffness="5" limited="true"/>
+            </default>
+            
+            <asset>
+                <texture type="skybox" builtin="gradient" rgb1=".4 .5 .6" rgb2="0 0 0" width="100" height="100"/>
+                <texture builtin="flat" height="1278" mark="cross" markrgb="1 1 1" name="texgeom" random="0.01" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" type="cube" width="127"/>
+                <material name="geom" texture="texgeom" texuniform="true"/>
+            </asset>
+            
+            <worldbody>
+                <light diffuse=".5 .5 .5" pos="0 0 3" dir="0 0 -1"/>
+                <geom type="plane" size="1 1 0.1" rgba=".9 0 0 1"/>
+                
+                <body name="torso" pos="0 0 1.4">
+                    <geom type="capsule" size="0.07" fromto="0 -.07 0 0 .07 0" rgba="0.8 0.6 0.4 1"/>
+                    <joint name="root_x" type="slide" axis="1 0 0" limited="false"/>
+                    <joint name="root_y" type="slide" axis="0 1 0" limited="false"/>
+                    <joint name="root_z" type="slide" axis="0 0 1" limited="false"/>
+                    <joint name="root_rot_x" type="hinge" axis="1 0 0" limited="false"/>
+                    <joint name="root_rot_y" type="hinge" axis="0 1 0" limited="false"/>
+                    <joint name="root_rot_z" type="hinge" axis="0 0 1" limited="false"/>
+                    
+                    <body name="lwaist" pos="0 0 0.2">
+                        <geom type="capsule" size="0.06" fromto="0 0 0 0 0 0.3" rgba="0.8 0.6 0.4 1"/>
+                        <joint name="abdomen_y" type="hinge" axis="0 1 0" range="-45 45"/>
+                        <joint name="abdomen_z" type="hinge" axis="0 0 1" range="-45 45"/>
+                        <joint name="abdomen_x" type="hinge" axis="1 0 0" range="-45 45"/>
+                        
+                        <body name="pelvis" pos="0 0 -0.5">
+                            <geom type="capsule" size="0.08" fromto="-.02 -.07 0 .02 .07 0" rgba="0.8 0.6 0.4 1"/>
+                            
+                            <body name="right_thigh" pos="0 -0.1 0">
+                                <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.4" rgba="0.8 0.6 0.4 1"/>
+                                <joint name="right_hip_x" type="hinge" axis="1 0 0" range="-30 80"/>
+                                <joint name="right_hip_y" type="hinge" axis="0 1 0" range="-30 30"/>
+                                <joint name="right_hip_z" type="hinge" axis="0 0 1" range="-60 35"/>
+                                
+                                <body name="right_shin" pos="0 0 -0.4">
+                                    <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4" rgba="0.8 0.6 0.4 1"/>
+                                    <joint name="right_knee" type="hinge" axis="0 1 0" range="-160 -2"/>
+                                    
+                                    <body name="right_foot" pos="0 0 -0.4">
+                                        <geom type="capsule" size="0.04" fromto="-.05 0 0 .05 0 0" rgba="0.8 0.6 0.4 1"/>
+                                        <joint name="right_ankle_y" type="hinge" axis="0 1 0" range="-50 50"/>
+                                        <joint name="right_ankle_x" type="hinge" axis="1 0 0" range="-50 50"/>
+                                    </body>
+                                </body>
+                            </body>
+                            
+                            <body name="left_thigh" pos="0 0.1 0">
+                                <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.4" rgba="0.8 0.6 0.4 1"/>
+                                <joint name="left_hip_x" type="hinge" axis="1 0 0" range="-30 80"/>
+                                <joint name="left_hip_y" type="hinge" axis="0 1 0" range="-30 30"/>
+                                <joint name="left_hip_z" type="hinge" axis="0 0 1" range="-35 60"/>
+                                
+                                <body name="left_shin" pos="0 0 -0.4">
+                                    <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4" rgba="0.8 0.6 0.4 1"/>
+                                    <joint name="left_knee" type="hinge" axis="0 1 0" range="-160 -2"/>
+                                    
+                                    <body name="left_foot" pos="0 0 -0.4">
+                                        <geom type="capsule" size="0.04" fromto="-.05 0 0 .05 0 0" rgba="0.8 0.6 0.4 1"/>
+                                        <joint name="left_ankle_y" type="hinge" axis="0 1 0" range="-50 50"/>
+                                        <joint name="left_ankle_x" type="hinge" axis="1 0 0" range="-50 50"/>
+                                    </body>
+                                </body>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+            
+            <actuator>
+                <motor name="abdomen_y" joint="abdomen_y" gear="40"/>
+                <motor name="abdomen_z" joint="abdomen_z" gear="40"/>
+                <motor name="abdomen_x" joint="abdomen_x" gear="40"/>
+                <motor name="right_hip_x" joint="right_hip_x" gear="40"/>
+                <motor name="right_hip_y" joint="right_hip_y" gear="40"/>
+                <motor name="right_hip_z" joint="right_hip_z" gear="40"/>
+                <motor name="right_knee" joint="right_knee" gear="40"/>
+                <motor name="right_ankle_y" joint="right_ankle_y" gear="40"/>
+                <motor name="right_ankle_x" joint="right_ankle_x" gear="40"/>
+                <motor name="left_hip_x" joint="left_hip_x" gear="40"/>
+                <motor name="left_hip_y" joint="left_hip_y" gear="40"/>
+                <motor name="left_hip_z" joint="left_hip_z" gear="40"/>
+                <motor name="left_knee" joint="left_knee" gear="40"/>
+                <motor name="left_ankle_y" joint="left_ankle_y" gear="40"/>
+                <motor name="left_ankle_x" joint="left_ankle_x" gear="40"/>
+            </actuator>
+        </mujoco>
+        """
+        return mujoco.MjModel.from_xml_string(model_xml)
+
+    # Keyboard callback methods for MuJoCo viewer
+    def _handle_escape_key(self):
+        """Handle ESC key - quit"""
+        print("ESC pressed - quitting")
+        self.viewer.close()
+        
+    def _handle_v_key(self):
+        """Handle V key - toggle viewer sync"""
+        self.enable_viewer_sync = not self.enable_viewer_sync
+        print(f"Viewer sync: {self.enable_viewer_sync}")
+        
+    def _handle_l_key(self):
+        """Handle L key - toggle video record"""
+        self.recording = not self.recording
+        if self.recording:
+            print("Recording started")
+        else:
+            print("Recording stopped")
+        
+    def _handle_r_key(self):
+        """Handle R key - reset"""
+        print("Reset requested")
+        
+    def _handle_f_key(self):
+        """Handle F key - follow"""
+        flags.follow = not flags.follow
+        print(f"Follow mode: {flags.follow}")
+        
+    def _handle_g_key(self):
+        """Handle G key - fixed"""
+        flags.fixed = not flags.fixed
+        print(f"Fixed mode: {flags.fixed}")
+        
+    def _handle_h_key(self):
+        """Handle H key - divide group"""
+        flags.divide_group = not flags.divide_group
+        print(f"Divide group: {flags.divide_group}")
+        
+    def _handle_c_key(self):
+        """Handle C key - print camera"""
+        print("Print camera info")
+        
+    def _handle_m_key(self):
+        """Handle M key - disable collision reset"""
+        flags.no_collision_check = not flags.no_collision_check
+        print(f"No collision check: {flags.no_collision_check}")
+        
+    def _handle_b_key(self):
+        """Handle B key - fixed path"""
+        flags.fixed_path = not flags.fixed_path
+        print(f"Fixed path: {flags.fixed_path}")
+        
+    def _handle_n_key(self):
+        """Handle N key - real path"""
+        flags.real_path = not flags.real_path
+        print(f"Real path: {flags.real_path}")
+        
+    def _handle_k_key(self):
+        """Handle K key - show trajectory"""
+        flags.show_traj = not flags.show_traj
+        print(f"Show trajectory: {flags.show_traj}")
+        
+    def _handle_j_key(self):
+        """Handle J key - apply force"""
+        print("Apply force")
+        
+    def _handle_left_key(self):
+        """Handle LEFT key - previous env"""
+        if self.viewing_env_idx > 0:
+            self.viewing_env_idx -= 1
+        print(f"Viewing environment: {self.viewing_env_idx}")
+        
+    def _handle_right_key(self):
+        """Handle RIGHT key - next env"""
+        if self.viewing_env_idx < len(self.envs) - 1:
+            self.viewing_env_idx += 1
+        print(f"Viewing environment: {self.viewing_env_idx}")
+        
+    def _handle_t_key(self):
+        """Handle T key - resample motion"""
+        print("Resample motion")
+        
+    def _handle_y_key(self):
+        """Handle Y key - slow trajectory"""
+        flags.slow = not flags.slow
+        print(f"Slow trajectory: {flags.slow}")
+        
+    def _handle_i_key(self):
+        """Handle I key - trigger input"""
+        flags.trigger_input = not flags.trigger_input
+        print(f"Trigger input: {flags.trigger_input}")
+        
+    def _handle_p_key(self):
+        """Handle P key - show progress"""
+        print("Show progress")
+        
+    def _handle_o_key(self):
+        """Handle O key - change color"""
+        print("Change color")
+        
+    def _handle_space_key(self):
+        """Handle SPACE key - pause"""
+        self.paused = not self.paused
+        print(f"Paused: {self.paused}")
+        
+    def _sync_isaac_to_mujoco(self):
+        """Synchronize Isaac Gym state to MuJoCo model for visualization"""
+        if self.viewer is None or self.mujoco_model is None:
+            return
+            
+        # Get Isaac Gym state
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        
+        # For now, just animate the first environment
+        if hasattr(self, '_rigid_body_pos') and hasattr(self, '_rigid_body_rot'):
+            # Update MuJoCo model based on Isaac Gym state
+            # This is a simplified mapping - you may need to adjust based on your specific model
+            if len(self._rigid_body_pos) > 0:
+                root_pos = self._rigid_body_pos[0, 0]  # First environment, root body
+                root_quat = self._rigid_body_rot[0, 0]  # First environment, root body
+                
+                # Set root position
+                self.mujoco_data.qpos[0] = root_pos[0].item()  # x
+                self.mujoco_data.qpos[1] = root_pos[1].item()  # y
+                self.mujoco_data.qpos[2] = root_pos[2].item()  # z
+                
+                # Set root orientation (convert from quaternion to euler if needed)
+                self.mujoco_data.qpos[3] = root_quat[0].item()  # qw
+                self.mujoco_data.qpos[4] = root_quat[1].item()  # qx
+                self.mujoco_data.qpos[5] = root_quat[2].item()  # qy
+                self.mujoco_data.qpos[6] = root_quat[3].item()  # qz
 
     # set gravity based on up axis and return axis index
     def set_sim_params_up_axis(self, sim_params, axis):
@@ -317,91 +570,15 @@ class BaseTask():
 
     def render(self, sync_frame_time=False):
         if self.viewer:
-            # check for window closed
-            if self.gym.query_viewer_has_closed(self.viewer):
+            # Check if MuJoCo viewer is still open
+            if not self.viewer.is_alive:
+                print("MuJoCo viewer closed - exiting")
                 sys.exit()
 
-            # check for keyboard events
-            for evt in self.gym.query_viewer_action_events(self.viewer):
+            # Synchronize Isaac Gym state to MuJoCo for visualization
+            self._sync_isaac_to_mujoco()
 
-                if evt.action == "QUIT" and evt.value > 0:
-                    sys.exit()
-                if evt.action == "PAUSE" and evt.value > 0:
-                    self.paused = not self.paused
-
-                elif evt.action == "toggle_viewer_sync" and evt.value > 0:
-                    self.enable_viewer_sync = not self.enable_viewer_sync
-                elif evt.action == "toggle_video_record" and evt.value > 0:
-                    self.recording = not self.recording
-                    self.recording_state_change = True
-                elif evt.action == "cancel_video_record" and evt.value > 0:
-                    self.recording = False
-                    self.recording_state_change = False
-                    self._video_queue = deque(maxlen=self.max_video_queue_size)
-                    self._clear_recorded_states()
-                elif evt.action == "reset" and evt.value > 0:
-                    self.reset()
-                elif evt.action == "follow" and evt.value > 0:
-                    flags.follow = not flags.follow
-                elif evt.action == "fixed" and evt.value > 0:
-                    flags.fixed = not flags.fixed
-                elif evt.action == "divide_group" and evt.value > 0:
-                    flags.divide_group = not flags.divide_group
-                elif evt.action == "print_cam" and evt.value > 0:
-                    cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
-                    cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
-                    print("Print camera", cam_pos)
-                elif evt.action == "disable_collision_reset" and evt.value > 0:
-                    flags.no_collision_check = not flags.no_collision_check
-                    print("collision_reset: ", flags.no_collision_check)
-                elif evt.action == "fixed_path" and evt.value > 0:
-                    flags.fixed_path = not flags.fixed_path
-                    print("fixed_path: ", flags.fixed_path)
-                elif evt.action == "real_path" and evt.value > 0:
-                    flags.real_path = not flags.real_path
-                    print("real_path: ", flags.real_path)
-                elif evt.action == "show_traj" and evt.value > 0:
-                    flags.show_traj = not flags.show_traj
-                    print("show_traj: ", flags.show_traj)
-                elif evt.action == "trigger_input" and evt.value > 0:
-                    flags.trigger_input = not flags.trigger_input
-                    self.change_char_color()
-                    print("show_traj: ", flags.show_traj) 
-                elif evt.action == "show_progress" and evt.value > 0:
-                    print("Progress ", self.progress_buf) 
-                elif evt.action == "apply_force" and evt.value > 0:
-                    forces = torch.zeros((1, self._rigid_body_state.shape[0], 3), device=self.device, dtype=torch.float)
-                    torques = torch.zeros((1, self._rigid_body_state.shape[0], 3), device=self.device, dtype=torch.float)
-                    # forces[:, 8, :] = -800
-                    for i in range(self._rigid_body_state.shape[0] // self.num_bodies):
-                        forces[:, i * self.num_bodies + 3, :] = -3500
-                        forces[:, i * self.num_bodies + 7, :] = -3500
-                    # torques[:, 1, :] = 500
-
-                    self.gym.apply_rigid_body_force_tensors(self.sim, gymtorch.unwrap_tensor(forces), gymtorch.unwrap_tensor(torques), gymapi.ENV_SPACE)
-                    
-                elif evt.action == "prev_env" and evt.value > 0:
-                    self.viewing_env_idx = (self.viewing_env_idx - 1) % self.num_envs
-                    flags.idx -= 1; print(flags.idx)
-                    
-                    # self.recorder_camera_handle = self.recorder_camera_handles[self.viewing_env_idx]
-                    print("\nShowing env: ", self.viewing_env_idx, flags.idx)
-                elif evt.action == "next_env" and evt.value > 0:
-                    self.viewing_env_idx = (self.viewing_env_idx + 1) % self.num_envs
-                    flags.idx += 1; 
-                    # self.recorder_camera_handle = self.recorder_camera_handles[self.viewing_env_idx]
-                    print("\nShowing env: ", self.viewing_env_idx, flags.idx)
-                elif evt.action == "resample_motion" and evt.value > 0:
-                    self.resample_motions()
-                    
-                elif evt.action == "slow_traj" and evt.value > 0:
-                    flags.slow = not flags.slow
-                    print("slow_traj: ", flags.slow)
-                
-                elif evt.action == "change_color" and evt.value > 0:
-                    self.change_char_color()
-                    print("Change character color")
-            
+            # Handle recording
             if self.recording_state_change:
                 if not self.recording:
                     if not flags.server_mode:
@@ -436,43 +613,42 @@ class BaseTask():
                             self.writer = imageio.get_writer(self.curr_video_file_name, fps=int(1/self.dt), macro_block_size=None)
                     self.writer.append_data(self.color_image)
                     
-                    
                 self._record_states()
 
-            # fetch results
+            # fetch results from Isaac Gym
             if self.device != 'cpu':
                 self.gym.fetch_results(self.sim, True)
 
-            # step graphics
+            # step graphics and render with MuJoCo viewer
             if self.enable_viewer_sync:
                 self.gym.step_graphics(self.sim)
-                self.gym.draw_viewer(self.viewer, self.sim, True)
-                # self.gym.sync_frame_time(self.sim)
-
+                
+                # Update MuJoCo visualization
+                mujoco.mj_step(self.mujoco_model, self.mujoco_data)
+                self.viewer.render()
+                
             else:
-                self.gym.poll_viewer_events(self.viewer)
+                # For MuJoCo viewer, we still need to render but without sync
+                self.viewer.render()
                 
-        # else:
-        #     if flags.server_mode:
-        #         # headless server model only support rendering from one env
-        #         self.gym.fetch_results(self.sim, True)
-        #         self.gym.step_graphics(self.sim)
-        #         self.gym.render_all_camera_sensors(self.sim)
-        #         self.gym.start_access_image_tensors(self.sim)
+        # Handle headless server mode rendering (Isaac Gym cameras)
+        else:
+            if flags.server_mode:
+                # headless server model only support rendering from one env
+                self.gym.fetch_results(self.sim, True)
+                self.gym.step_graphics(self.sim)
+                self.gym.render_all_camera_sensors(self.sim)
+                self.gym.start_access_image_tensors(self.sim)
 
-        #         # self.gym.get_viewer_camera_handle(self.viewer)
-        #         color_image = self.gym.get_camera_image(self.sim, self.envs[self.viewing_env_idx], self.recorder_camera_handles[self.viewing_env_idx], gymapi.IMAGE_COLOR)
+                # self.gym.get_viewer_camera_handle(self.viewer)
+                color_image = self.gym.get_camera_image(self.sim, self.envs[self.viewing_env_idx], self.recorder_camera_handles[self.viewing_env_idx], gymapi.IMAGE_COLOR)
 
-        #         self.color_image = color_image.reshape(color_image.shape[0], -1, 4)[..., :3]
+                self.color_image = color_image.reshape(color_image.shape[0], -1, 4)[..., :3]
 
-        #         if self.recording:
-        #             self._video_queue.append(self.color_image)
-        #             self._record_states()
-                    
-            
-                
-                
-                
+                if self.recording:
+                    self._video_queue.append(self.color_image)
+                    self._record_states()
+
     def get_actor_params_info(self, dr_params, env):
         """Returns a flat array of actor params, their names and ranges."""
         if "actor_params" not in dr_params:

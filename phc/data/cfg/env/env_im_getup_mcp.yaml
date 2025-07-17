@@ -31,7 +31,7 @@ num_prim: 4
 training_prim: 0
 actors_to_load: 4
 has_lateral: False
-models: []
+models: ["output/HumanoidIm/phc_shape_pnn_iccv/Humanoid.pth"]
 
 ######## Getup Configs ########
 zero_out_far: True

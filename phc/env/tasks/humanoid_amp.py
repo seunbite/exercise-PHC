@@ -332,7 +332,7 @@ class HumanoidAMP(Humanoid):
         assert (self._dof_offsets[-1] == self.num_dof)
         if self.humanoid_type in ["smpl", "smplh", "smplx"]:
             motion_lib_cfg = EasyDict({
-                "motion_file": motion_file,
+                "motion_file": motion_train_file,
                 "device": torch.device("cpu"),
                 "fix_height": FixHeightMode.full_fix,
                 "min_length": -1,
@@ -761,9 +761,14 @@ class HumanoidAMP(Humanoid):
         self.gym.refresh_actor_root_state_tensor(self.sim)
         char_root_pos = self._humanoid_root_states[self.viewing_env_idx, 0:3].cpu().numpy()
 
-        if self.viewer:
+        # Only call Isaac Gym viewer methods if viewer is actually an Isaac Gym viewer
+        if self.viewer is not None and hasattr(self.viewer, 'handle') and not hasattr(self.viewer, 'cam'):
+            # This is an Isaac Gym viewer
             cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
             cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
+        elif self.viewer is not None and hasattr(self.viewer, 'cam'):
+            # This is a MujocoViewer, use default camera position
+            cam_pos = np.array([char_root_pos[0] + 2.5, char_root_pos[1] + 2.5, char_root_pos[2]])
         else:
             cam_pos = np.array([char_root_pos[0] + 2.5, char_root_pos[1] + 2.5, char_root_pos[2]])
 
@@ -782,7 +787,22 @@ class HumanoidAMP(Humanoid):
             self.start = False
 
         if self.start:
-            self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+            # Only call Isaac Gym viewer methods if viewer is actually an Isaac Gym viewer
+            if self.viewer is not None and hasattr(self.viewer, 'handle') and not hasattr(self.viewer, 'cam'):
+                # This is an Isaac Gym viewer
+                self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+            elif self.viewer is not None and hasattr(self.viewer, 'cam'):
+                # This is a MujocoViewer, update camera using MuJoCo methods
+                self.viewer.cam.lookat[0] = new_cam_target.x
+                self.viewer.cam.lookat[1] = new_cam_target.y
+                self.viewer.cam.lookat[2] = new_cam_target.z
+                
+                # Calculate distance and angles for MuJoCo camera
+                import math
+                cam_dir = [new_cam_pos.x - new_cam_target.x, new_cam_pos.y - new_cam_target.y, new_cam_pos.z - new_cam_target.z]
+                self.viewer.cam.distance = math.sqrt(cam_dir[0]**2 + cam_dir[1]**2 + cam_dir[2]**2)
+                self.viewer.cam.azimuth = math.degrees(math.atan2(cam_dir[1], cam_dir[0]))
+                self.viewer.cam.elevation = math.degrees(math.atan2(cam_dir[2], math.sqrt(cam_dir[0]**2 + cam_dir[1]**2)))
 
         self._cam_prev_char_pos[:] = char_root_pos
         return

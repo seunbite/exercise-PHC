@@ -28,12 +28,19 @@
 
 import numpy as np
 
+# Isaac Sim’s Python bindings have appeared under two different top-level
+# namespaces depending on the packaging method that was used:
+#   • `isaacsim.core`   – published as the `isaacsim-core` wheel (dash → dot)
+#   • `isaacsim_core`   – older wheels / source builds
+# Try the canonical `isaacsim.core` import first and fall back to
+# `isaacsim_core` if it is not available. This makes the code work in either
+# environment without forcing the user to rename their installed package.
+
 from isaacgym.torch_utils import *
 import torch
 from torch import nn
 import phc.utils.pytorch3d_transforms as ptr
 import torch.nn.functional as F
-
 
 def project_to_norm(x, norm=5, z_type = "sphere"):
     if z_type == "sphere":

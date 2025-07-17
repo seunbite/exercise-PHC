@@ -60,7 +60,7 @@ from learning import amp_network_mcp_builder
 from learning import amp_network_pnn_builder
 
 
-from env.tasks import humanoid_amp_task
+from phc.env.tasks import humanoid_amp_task
 
 args = None
 cfg = None
